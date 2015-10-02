@@ -1,0 +1,133 @@
+import sys, os
+from optparse import OptionParser
+
+MONGOSB_VERSION = 0.1
+
+class MongoBinaries(object):
+    def __init__(self):
+        self.binpath = None
+
+    def is_an_archive(self):
+        pass
+
+class MongoLogger(object):
+    def out(self, tag, *msgs):
+        s = ''
+
+        if not msgs:
+            return
+
+        for msg in msgs:
+            s += str(msg)
+
+        out = "[%s] %s: %s" % (date(time.time()), tag, s)
+
+        if xb_log_fd is not None:
+            os.write(xb_log_fd, "%s\n" % out)
+
+        if not xb_opt_quiet: print out
+
+    def say(self, *msgs):
+        out('INFO', *msgs)
+
+    def warn(self, *msgs):
+        out('WARN', *msgs)
+
+    def error(self, *msgs):
+        out('ERROR', *msgs)
+
+    def die(self, *msgs):
+        out('FATAL', *msgs)
+        if not xb_exit_code: _exit_code(XB_EXIT_BY_DEATH)
+        raise Exception(str(msgs))
+
+    def debug(self, *msgs):
+        if xb_opt_debug: out("** DEBUG **", *msgs)
+
+    def which(self, file):
+        for path in os.environ["PATH"].split(os.pathsep):
+            if os.path.exists(path + os.path.sep + file):
+                    return path + os.path.sep + file
+
+        return None
+
+class MongoFactory(object):
+    
+    def __init__(self):
+        self.base_dbpath = None
+        self.bin_path = None
+        self.ports_list = [27017]
+
+        self.parse_options()
+
+    def parse_options(self):
+        p_usage = "Usage: %prog [options] create|pause|resume|destroy [-- mongodb options]"
+        p_desc = ("MongoDB Sandbox - Create, destroy, experiment, "
+            "learn MongoDB - quickly!")
+
+        parser = OptionParser(p_usage, version="%prog " + str(MONGOSB_VERSION),
+            description=p_desc)
+        parser.add_option('', '--base-port', dest='base_port', type='string',
+            help='Custom port (can be range in form "min,max")')
+        parser.add_option('', '--release', dest='release', type='string',
+            help=('MongoDB version to run, can be a path to a package, \n'
+                'path to folder with binaries, or basename inside \n' 
+                'MONGOSB_BINARIES environment variable'))
+
+        (opts, args) = parser.parse_args()
+
+        if opts.base_port: 
+            self.ports_list = self.parse_port(opts.base_port)
+
+        if opts.release and os.path.isdir(opts.release):
+            self.bin_path = os.path.join(opts.release.rstrip('/'),'bin')
+            if not os.path.isdir(self.bin_path):
+                parser.error("Release directory is not valid directory")
+            elif not os.path.isfile(os.path.join(self.bin_path,'mongod')):
+                parser.error("The specified mongod binary does not exist")
+
+    def parse_port(self, param):
+        """
+        Parses and assign given port range values 
+        i.e.
+        param = 27017
+        param = 27017,27018
+
+        TODO: This should throw an exception if param is not valid
+        """
+
+        pmin = 27017
+        pmax = 27017
+        t = 27017
+
+        if not param: return pmin
+
+        if param.isdigit():
+            return pmin
+        elif param.count(',') == 1:
+            pmin, pmax = param.split(',')
+            pmin = pmin.strip()
+            pmax = pmax.strip()
+            
+            if not pmin.isdigit() or not pmax.isdigit(): 
+                raise
+            
+            pmin = int(pmin)
+            pmax = int(pmax)
+            
+            if pmin == pmax:
+                return pmin
+            elif pmin > pmax:
+                t = pmin
+                pmin = pmax
+                pmax = t
+            
+            return range(pmin, pmax+1)
+
+        else:
+            raise
+
+        return pmin
+
+if __name__ == "__main__":
+    mongosb = MongoFactory()
