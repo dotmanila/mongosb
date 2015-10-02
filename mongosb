@@ -1,3 +1,9 @@
+#!/usr/bin/python
+
+# mongosb - MongoDB Sandbox - Create, destroy, experiment, learn MongoDB - quickly!
+#
+# @author Jervin Real <jervin.real@percona.com>
+
 import sys, os
 from optparse import OptionParser
 
