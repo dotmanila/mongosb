@@ -67,9 +67,10 @@ def date(unixtime, format = '%m/%d/%Y %H:%M:%S'):
 
 class MongoServer(object):
     def __init__(self, relpath):
-        self.tar_path = None
+        self.opts = None
         self.bin_path = None
         self.mongod = None
+        self.conf = None
 
         if os.path.isdir(relpath):
             self.bin_path = os.path.join(relpath.rstrip('/'),'bin')
@@ -89,12 +90,71 @@ class MongoServer(object):
 
     def start(self, opts):
         cmd = self.mongod
+        self.opts = opts
+        self.conf = "%s/mongod.conf" % opts['dbpath']
 
-        if len(opts):
-            for o, v in opts.iteritems():
-                cmd = "%s --%s=%s" % (cmd, o, v)
+        if not os.path.isfile(self.conf):
+            self.write_config()
 
-        Popen(cmd, shell=True, close_fds=True)
+        cmd = "%s --config=%s" % (cmd, self.conf)
+
+        debug("Server command is: %s" % cmd)
+        p = Popen(cmd, shell=True)
+        r = p.poll()
+        while r is None:
+            time.sleep(2)
+            r = p.poll()
+
+        if r != 0: return False
+
+        return True
+
+    def cleanup_instance(self, dbpath):
+        pass
+
+    def init_instance(self):
+        header = "#!%s\n" % which('bash')
+        cmd = "%s/mongod --config=%s" % (self.bin_path, self.conf)
+        f = os.path.join(self.opts['dbpath'], 'start')
+        fd = open(f, 'w')
+        fd.write(header)
+        fd.write(cmd)
+        fd.close()
+        os.chmod(f, 0755)
+
+        cmd = "%s --shutdown" % cmd
+        f = os.path.join(self.opts['dbpath'], 'stop')
+        fd = open(f, 'w')
+        fd.write(header)
+        fd.write(cmd)
+        fd.close()
+        os.chmod(f, 0755)
+
+        cmd = "%s/mongo --host=%s --port=%d" % (
+            self.bin_path, '127.0.0.1', self.opts['port'])
+        f = os.path.join(self.opts['dbpath'], 'use')
+        fd = open(f, 'w')
+        fd.write(header)
+        fd.write(cmd)
+        fd.close()
+        os.chmod(f, 0755)
+
+    def write_config(self):
+        conf = "%s/mongod.conf" % self.opts['dbpath']
+        fd = open(conf, 'w')
+        fd.write('storage:\n')
+        fd.write("    dbPath: \"%s\"\n" % self.opts['dbpath'])
+        fd.write('systemLog:\n')
+        fd.write('    destination: file\n')
+        fd.write("    path: \"%s\"\n" % self.opts['logpath'])
+        fd.write('processManagement:\n')
+        fd.write('    fork: true\n')
+        fd.write("    pidFilePath: \"%s\"\n" % self.opts['pidFilePath'])
+        fd.write('net:\n')
+        fd.write("    port: %d\n" % self.opts['port'])
+        fd.write('    unixDomainSocket:\n')
+        fd.write("        pathPrefix: \"%s\"\n" % self.opts['unixSocketPrefix'])
+        fd.close()
 
 class MongoFactory(object):
     
@@ -209,9 +269,17 @@ class MongoFactory(object):
             opts = dict()
             opts['port'] = port
             opts['dbpath'] = self.sandbox_dir
-            self.bin.start(opts)
+            opts['logpath'] = "%s/mongodb.log" % self.sandbox_dir
+            opts['pidFilePath'] = "%s/mongodb.pid" % self.sandbox_dir
+            opts['unixSocketPrefix'] = self.sandbox_dir
+            opts['fork'] = None
+            if self.bin.start(opts):
+                self.bin.init_instance()
+            else:
+                self.bin.cleanup_instance(self.sandbox_dir)
 
         say("Running create sandbox")
+        debug(str(opts))
 
     def run_destroy(self):
         say("Running destroy sandbox")
