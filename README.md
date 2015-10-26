@@ -50,13 +50,14 @@ These values cannot be overridden from the command line when creating new instan
 
 You can pass additional configuration options at creation time from the command like like:
 
-    mongosb --release=3.0.50 create -- storage.directoryPerDB=true storage.journal=true
+    mongosb --release=3.0.50 create -- storage.directoryPerDB=true storage.journal.enabled=true
 
 This will create a configuration file with the additional options:
 
     [...]
     storage:
-      journal: true
+      journal: 
+        enabled: true
       dbPath: <dbPath>
       directoryPerDB: true
     [...]
