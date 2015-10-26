@@ -27,3 +27,37 @@ Setup your environment:
 Run your first sandbox:
 
     ~/bin/mongosb --release=3.0.6 create
+
+Configuration
+=============
+
+The script creates a baseline configuration below:
+
+    net:
+      unixDomainSocket:
+        pathPrefix: <dbPath>
+      port: 27017
+    processManagement:
+      fork: true
+      pidFilePath: <dbPath>/mongodb.pid
+    storage:
+      dbPath: <dbpath>
+    systemLog:
+      path: <dbPath>/mongodb.log
+      destination: file
+
+These values cannot be overridden from the command line when creating new instances.
+
+You can pass additional configuration options at creation time from the command like like:
+
+    mongosb --release=3.0.50 create -- storage.directoryPerDB=true storage.journal=true
+
+This will create a configuration file with the additional options:
+
+    [...]
+    storage:
+      journal: true
+      dbPath: <dbPath>
+      directoryPerDB: true
+    [...]
+

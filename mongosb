@@ -4,13 +4,14 @@
 #
 # @author Jervin Real <jervin.real@percona.com>
 
-import sys, os
+import sys, os, collections
 import time, calendar, shutil, re, pwd
 from datetime import datetime
 from optparse import OptionParser
 from subprocess import Popen, PIPE, STDOUT, CalledProcessError
 
 MONGOSB_VERSION = 0.1
+MONGOSB_DEBUG   = False
 MONGOSB__X_DIE  = 255
 
 """
@@ -65,22 +66,78 @@ def date(unixtime, format = '%m/%d/%Y %H:%M:%S'):
     d = datetime.fromtimestamp(unixtime)
     return d.strftime(format)
 
+def run(cmd):
+    p = Popen(cmd, shell=True)
+    r = p.poll()
+    while r is None:
+        time.sleep(2)
+        r = p.poll()
+
+    if r != 0: return False
+
+    return True
+
+class MongoConfig(object):
+    def __init__(self, args):
+        self.vals = {} 
+
+        for i in range(1, len(args)):
+            k, v = args[i].split('=')
+            self.set(k, v)
+
+    def set(self, keys, value):
+        keys = keys.split(".")
+        for k in keys[:-1]:
+            if not k in self.vals: self.vals[k] = {}
+            self.vals = self.vals[k]            
+        self.vals[keys[-1]] = value
+
+    def get(self, keys):
+        keys = keys.split(".")
+        for k in keys[:-1]:
+            if not k in self.vals: self.vals[k] = {}
+            self.vals = self.vals[k]            
+        self.vals[keys[-1]] = value
+        
+
 class MongoServer(object):
-    def __init__(self, relpath):
+    def __init__(self):
         self.opts = None
         self.bin_path = None
         self.mongod = None
         self.conf = None
+        self.bash = which('bash')
 
-        if os.path.isdir(relpath):
-            self.bin_path = os.path.join(relpath.rstrip('/'),'bin')
+    def start(self, dbpath):
+        cmd = "%s %s/start" % (self.bash, dbpath)
+        return run(cmd)
+
+    def stop(self, dbpath):
+        cmd = "%s %s/stop" % (self.bash, dbpath)
+        return run(cmd)
+
+    def cleanup_instance(self, dbpath):
+        say("Destroy of instance %s" % dbpath)
+
+        if not self.stop(dbpath):
+            die("Instance at %s failed to stop" % dbpath)
+
+        shutil.rmtree(dbpath)
+        return True
+
+    def init_instance(self, opts, conf):
+        self.opts = opts
+        self.conf = conf
+        conf = "%s/mongod.conf" % self.conf['storage']['dbPath']
+
+        if os.path.isdir(opts.release):
+            self.bin_path = os.path.join(opts.release.rstrip('/'),'bin')
         elif os.environ.get('MONGOSB_BINARIES'):
             self.bin_path = os.path.join(
-                os.environ.get('MONGOSB_BINARIES').rstrip('/'), relpath, 'bin')
+                os.environ.get('MONGOSB_BINARIES').rstrip('/'), opts.release, 'bin')
         else:
             die("Specified mongodb package/release is not valid")
 
-        debug("bin_path: %s" % self.bin_path)
         self.mongod = os.path.join(self.bin_path,'mongod')
 
         if not os.path.isdir(self.bin_path):
@@ -88,34 +145,9 @@ class MongoServer(object):
         elif not os.path.isfile(self.mongod):
             die("The mongod binary %s does not exist" % self.mongod)
 
-    def start(self, opts):
-        cmd = self.mongod
-        self.opts = opts
-        self.conf = "%s/mongod.conf" % opts['dbpath']
-
-        if not os.path.isfile(self.conf):
-            self.write_config()
-
-        cmd = "%s --config=%s" % (cmd, self.conf)
-
-        debug("Server command is: %s" % cmd)
-        p = Popen(cmd, shell=True)
-        r = p.poll()
-        while r is None:
-            time.sleep(2)
-            r = p.poll()
-
-        if r != 0: return False
-
-        return True
-
-    def cleanup_instance(self, dbpath):
-        pass
-
-    def init_instance(self):
         header = "#!%s\n" % which('bash')
-        cmd = "%s/mongod --config=%s" % (self.bin_path, self.conf)
-        f = os.path.join(self.opts['dbpath'], 'start')
+        cmd = "%s/mongod --config=%s" % (self.bin_path, conf)
+        f = os.path.join(self.conf['storage']['dbPath'], 'start')
         fd = open(f, 'w')
         fd.write(header)
         fd.write(cmd)
@@ -123,7 +155,7 @@ class MongoServer(object):
         os.chmod(f, 0755)
 
         cmd = "%s --shutdown" % cmd
-        f = os.path.join(self.opts['dbpath'], 'stop')
+        f = os.path.join(self.conf['storage']['dbPath'], 'stop')
         fd = open(f, 'w')
         fd.write(header)
         fd.write(cmd)
@@ -131,40 +163,49 @@ class MongoServer(object):
         os.chmod(f, 0755)
 
         cmd = "%s/mongo --host=%s --port=%d" % (
-            self.bin_path, '127.0.0.1', self.opts['port'])
-        f = os.path.join(self.opts['dbpath'], 'use')
+            self.bin_path, '127.0.0.1', self.conf['net']['port'])
+        f = os.path.join(self.conf['storage']['dbPath'], 'use')
         fd = open(f, 'w')
         fd.write(header)
         fd.write(cmd)
         fd.close()
         os.chmod(f, 0755)
 
+        if not os.path.isfile(conf):
+            self.write_config()
+
+        return True
+
     def write_config(self):
-        conf = "%s/mongod.conf" % self.opts['dbpath']
-        fd = open(conf, 'w')
-        fd.write('storage:\n')
-        fd.write("    dbPath: \"%s\"\n" % self.opts['dbpath'])
-        fd.write('systemLog:\n')
-        fd.write('    destination: file\n')
-        fd.write("    path: \"%s\"\n" % self.opts['logpath'])
-        fd.write('processManagement:\n')
-        fd.write('    fork: true\n')
-        fd.write("    pidFilePath: \"%s\"\n" % self.opts['pidFilePath'])
-        fd.write('net:\n')
-        fd.write("    port: %d\n" % self.opts['port'])
-        fd.write('    unixDomainSocket:\n')
-        fd.write("        pathPrefix: \"%s\"\n" % self.opts['unixSocketPrefix'])
-        fd.close()
+        conf = "%s/mongod.conf" % self.conf['storage']['dbPath']
+        f = open(conf, 'w')
+        f.write(self.dict_to_yaml(self.conf))
+        f.close()
+
+    def dict_to_yaml(self, s, sep="\n"):
+        """
+        We use this instead of pyyaml, single function vs extra description
+        """
+        yaml_s = ""
+        for k, v in s.iteritems():
+            if isinstance(v, collections.Mapping):
+                yaml_s = "%s%s%s:%s" % (
+                    yaml_s, sep, k, self.dict_to_yaml(v, sep + "  "))
+            else:
+                yaml_s = "%s%s%s: %s" % (yaml_s, sep, k ,v)
+        return yaml_s
 
 class MongoFactory(object):
     
     def __init__(self):
-        self.sandbox_dir = None
+        self.base_dir = None
         self.bin_path = None
         self.ports_list = [27017]
         self.cmd = None
         self.opts = None
+        self.args = None
         self.parser = None
+        self.conf = {}
 
         self.parse_options()
 
@@ -180,8 +221,11 @@ class MongoFactory(object):
             description=p_desc)
         parser.add_option('', '--base-port', dest='base_port', type='string',
             help='Custom port (can be range in form "min,max")')
-        parser.add_option('', '--sandbox-dir', dest='sandbox_dir', type='string',
-            help='Sandbox directory for mongodb instance(s)')
+        parser.add_option('', '--base-dir', dest='base_dir', type='string',
+            help=('Sandbox directory for mongodb instance(s) \n'
+                'Can also be defined as env variable MONGOSB_HOME'))
+        parser.add_option('', '--sandbox', dest='sandbox', type='string',
+            help='Used with destroy, full path to sandbox directory')
         parser.add_option('', '--release', dest='release', type='string',
             help=('MongoDB version to run, can be a path to a package, \n'
                 'path to folder with binaries, or basename inside \n' 
@@ -189,14 +233,14 @@ class MongoFactory(object):
 
         (opts, args) = parser.parse_args()
 
-        if opts.sandbox_dir:
-            self.sandbox_dir = opts.sandbox_dir
+        if opts.base_dir:
+            self.base_dir = opts.base_dir
         elif os.environ.get('MONGOSB_HOME'):
-            self.sandbox_dir = os.environ.get('MONGOSB_HOME')
+            self.base_dir = os.environ.get('MONGOSB_HOME')
 
-        if not self.sandbox_dir:
+        if not self.base_dir:
             parser.error("No dbpath specified or MONGOSB_HOME env not set")
-        elif not os.path.isdir(self.sandbox_dir):
+        elif not os.path.isdir(self.base_dir):
             parser.error("Base dbpath is not a valid directory")
 
         if opts.base_port: 
@@ -212,6 +256,8 @@ class MongoFactory(object):
 
         self.parser = parser
         self.opts = opts
+        self.args = args
+        self.parse_extras()
 
     def parse_port(self, param):
         """
@@ -256,33 +302,77 @@ class MongoFactory(object):
 
         return pmin
 
+    def parse_extras(self):
+        for i in range(1, len(self.args)):
+            k, v = self.args[i].split('=')
+            self.append_conf(k, v)
+
+        say(self.conf)
+
+    def merge_conf(self, d1, d2):
+        for k,v2 in d2.items():
+            v1 = d1.get(k) # returns None if v1 has no value for this key
+            if ( isinstance(v1, collections.Mapping) and 
+                 isinstance(v2, collections.Mapping) ):
+                self.merge_conf(v1, v2)
+            else:
+                d1[k] = v2
+
+        return d1
+
+    def append_conf(self, dotted_k, v):
+        d = self.parse_dotted(dotted_k, v)
+        k, v = d.popitem()
+        if k not in self.conf:
+            self.conf[k] = v
+        else:
+            n = self.merge_conf(v, self.conf[k])
+            self.conf[k] = n
+
+    def parse_dotted(self, keys, value, d=None):
+        if d is None: d = {}
+        if "." in keys:
+            key, rest = keys.split(".", 1)
+            if key not in d:
+                d[key] = {}
+            self.parse_dotted(rest, value, d[key])
+        else:
+            d[keys] = value
+        
+        return d
+
     def run_create(self):
         if not self.opts.release:
             self.parser.error("MongoDB release/package is required")
 
-        self.bin = MongoServer(self.opts.release)
+        self.bin = MongoServer()
         for port in self.ports_list:
-            self.sandbox_dir = "%s/mngo_%s" % (self.sandbox_dir, self.opts.release)
-            if not os.path.isdir(self.sandbox_dir):
-                os.mkdir(self.sandbox_dir, 0755)
+            dbpath = "%s/mngo_%s" % (self.base_dir, self.opts.release)
+            if not os.path.isdir(dbpath):
+                os.mkdir(dbpath, 0755)
 
-            opts = dict()
-            opts['port'] = port
-            opts['dbpath'] = self.sandbox_dir
-            opts['logpath'] = "%s/mongodb.log" % self.sandbox_dir
-            opts['pidFilePath'] = "%s/mongodb.pid" % self.sandbox_dir
-            opts['unixSocketPrefix'] = self.sandbox_dir
-            opts['fork'] = None
-            if self.bin.start(opts):
-                self.bin.init_instance()
-            else:
-                self.bin.cleanup_instance(self.sandbox_dir)
+            self.append_conf('net.port', port)
+            self.append_conf('storage.dbPath', dbpath)
+            self.append_conf('net.unixDomainSocket.pathPrefix', dbpath)
+            self.append_conf(
+                'processManagement.pidFilePath', "%s/mongodb.pid" % dbpath)
+            self.append_conf('processManagement.fork', 'true')
+            self.append_conf('net.unixDomainSocket.pathPrefix', dbpath)
+            self.append_conf('systemLog.destination', 'file')
+            self.append_conf('systemLog.path', "%s/mongodb.log" % dbpath)
 
-        say("Running create sandbox")
-        debug(str(opts))
+            #say(self.conf)
+            #sys.exit(0)
+
+            self.bin.init_instance(self.opts, self.conf)
+            self.bin.start(dbpath)
 
     def run_destroy(self):
-        say("Running destroy sandbox")
+        if not os.path.isdir(self.opts.sandbox):
+            self.parser.error("The specified sandbox directory is not valid")
+
+        self.bin = MongoServer()
+        self.bin.cleanup_instance(self.opts.sandbox)
 
 if __name__ == "__main__":
     mongosb = MongoFactory()
