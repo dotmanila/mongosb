@@ -99,7 +99,6 @@ class MongoConfig(object):
             self.vals = self.vals[k]            
         self.vals[keys[-1]] = value
         
-
 class MongoServer(object):
     def __init__(self):
         self.opts = None
@@ -163,7 +162,7 @@ class MongoServer(object):
         os.chmod(f, 0755)
 
         cmd = "%s/mongo --host=%s --port=%d" % (
-            self.bin_path, '127.0.0.1', self.conf['net']['port'])
+            self.bin_path, '127.0.0.1', int(self.conf['net']['port']))
         f = os.path.join(self.conf['storage']['dbPath'], 'use')
         fd = open(f, 'w')
         fd.write(header)
@@ -194,6 +193,14 @@ class MongoServer(object):
             else:
                 yaml_s = "%s%s%s: %s" % (yaml_s, sep, k ,v)
         return yaml_s
+
+class MongoReplicaSet(object):
+    def __init__(self):
+        pass
+
+class MongoShard(object):
+    def __init__(self):
+        pass
 
 class MongoFactory(object):
     
@@ -245,6 +252,7 @@ class MongoFactory(object):
 
         if opts.base_port: 
             self.ports_list = self.parse_port(opts.base_port)
+        else: self.ports_list = [self.next_port()]
 
         cmds = ['create', 'destroy']
         if len(args) >= 1 and args[0] not in cmds:
@@ -301,6 +309,28 @@ class MongoFactory(object):
             raise
 
         return pmin
+
+    def next_port(self):
+        """
+        Reads /proc/net/tcp and finds the next available port
+        starting from 27017
+        """
+        
+        ports = []
+        with open('/proc/net/tcp', 'r') as f:
+            for s in f:
+                local = re.sub(' +', ' ', s).split(' ')[2].split(':')
+                if len(local) == 2 and int(local[1], 16) > 27016:
+                    ports.append(int(local[1], 16))
+
+        f.close()
+        ports.sort()
+
+        port = 27017
+        while port in ports:
+            port += 1
+
+        return port
 
     def parse_extras(self):
         for i in range(1, len(self.args)):
